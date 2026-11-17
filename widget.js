@@ -65,7 +65,15 @@ function build(s, err) {
   }
   const soc = s.soc ?? null;
   if (s.lat) w.url = `https://maps.apple.com/?q=${s.lat},${s.lon}`;
-  if (fam === "accessoryInline") { w.addText(`🔋${soc ?? "--"}% ${s.range_km ?? "--"}km ${state(s)}`); return w; }
+  const warn = [];
+  if (s.door_open) warn.push("車門沒關");
+  if (s.window_open) warn.push("車窗沒關");
+  const chargeLine = () => {
+    const mins = s.charge_start ? Math.max(0, Math.round((Date.now() - s.charge_start) / 60000)) : null;
+    const t = mins === null ? "" : mins >= 60 ? `・${Math.floor(mins / 60)}時${mins % 60}分` : `・${mins}分`;
+    return `⚡ ${s.charge_kw ?? "--"}kW・已充 ${s.charge_kwh ?? "--"}kWh${t}`;
+  };
+  if (fam === "accessoryInline") { w.addText(`🔋${soc ?? "--"}% ${s.range_km ?? "--"}km ${warn.length ? "⚠️" + warn[0] : state(s)}`); return w; }
   if (fam === "accessoryCircular") {
     w.addAccessoryWidgetBackground = true;
     const t = w.addText(`${soc ?? "--"}%`); t.font = Font.boldSystemFont(16); t.centerAlignText();
@@ -74,7 +82,8 @@ function build(s, err) {
   }
   if (fam === "accessoryRectangular") {
     const t = w.addText(`🔋 ${soc ?? "--"}%　${s.range_km ?? "--"} km`); t.font = Font.boldSystemFont(15);
-    w.addText(`${state(s)}・${ago(s.updated_at)}`).font = Font.systemFont(12);
+    if (warn.length) { const wl = w.addText(`⚠️ ${warn.join("・")}`); wl.font = Font.boldSystemFont(12); }
+    else w.addText(`${state(s)}・${ago(s.updated_at)}`).font = Font.systemFont(12);
     return w;
   }
   w.setPadding(12, 14, 12, 14);
@@ -84,6 +93,12 @@ function build(s, err) {
   const st = w.addText(`${state(s)}${s.outside_c !== null && fam !== "small" ? `・車外 ${s.outside_c}°C` : ""}`);
   st.font = Font.systemFont(13);
   if (s.charging) st.textColor = new Color("#16a34a");
+  if (s.charging && fam !== "small") {
+    const c = w.addText(chargeLine()); c.font = Font.systemFont(13); c.textColor = new Color("#16a34a");
+  }
+  if (warn.length) {
+    const wl = w.addText(`⚠️ ${warn.join("・")}`); wl.font = Font.boldSystemFont(fam === "small" ? 12 : 13); wl.textColor = new Color("#dc2626");
+  }
   w.addSpacer();
   const up = w.addText(`更新 ${ago(s.updated_at)}`); up.font = Font.systemFont(11); up.textColor = Color.gray();
   return w;
