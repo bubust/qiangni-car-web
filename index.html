@@ -1,0 +1,595 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>牆泥車況</title>
+<!--
+  牆泥車機：手機看車況和報表。單一檔案、沒有秘密金鑰：預設連車主的 Supabase 專案（公開的網址和 publishable key），用車主帳號登入。
+  資料表見 supabase/schema.sql；每張表都有 Row Level Security，沒登入什麼都讀不到。
+-->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+<style>
+  :root { --bg:#f4f5f7; --card:#fff; --text:#16181d; --dim:#6b7280; --line:#e5e7eb; --accent:#2563eb; --good:#16a34a; --warn:#d97706; --bad:#dc2626; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f1115; --card:#1a1d23; --text:#e8eaed; --dim:#9aa3ad; --line:#2a2f37; --accent:#60a5fa; --good:#4ade80; --warn:#fbbf24; --bad:#f87171; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.5 -apple-system, "PingFang TC", "Noto Sans TC", sans-serif; padding-bottom: calc(70px + env(safe-area-inset-bottom)); }
+  header { padding: calc(14px + env(safe-area-inset-top)) 16px 6px; display:flex; align-items:baseline; justify-content:space-between; }
+  header h1 { margin:0; font-size:22px; }
+  header small { color:var(--dim); }
+  main { padding: 0 16px; max-width: 720px; margin: 0 auto; }
+  .card { background:var(--card); border-radius:14px; padding:14px 16px; margin:12px 0; border:1px solid var(--line); }
+  .card h2 { margin:0 0 8px; font-size:17px; }
+  .big { font-size:52px; font-weight:700; line-height:1.1; }
+  .row { display:flex; justify-content:space-between; gap:12px; padding:6px 0; border-top:1px solid var(--line); }
+  .row:first-of-type { border-top:none; }
+  .dim { color:var(--dim); font-size:14px; }
+  .grid { display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:10px; }
+  .stat b { display:block; font-size:24px; }
+  .stat span { color:var(--dim); font-size:13px; }
+  .good { color:var(--good); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+  .map { height:260px; border-radius:10px; margin-top:8px; }
+  .item { padding:10px 0; border-top:1px solid var(--line); cursor:pointer; }
+  .item:first-child { border-top:none; }
+  .item .t { font-weight:600; }
+  input, button, select { font:inherit; }
+  input { width:100%; padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:var(--bg); color:var(--text); margin:4px 0 10px; }
+  button { padding:10px 14px; border-radius:10px; border:none; background:var(--accent); color:#fff; font-weight:600; }
+  button.ghost { background:transparent; color:var(--accent); border:1px solid var(--line); }
+  nav { position:fixed; left:0; right:0; bottom:0; display:flex; background:var(--card); border-top:1px solid var(--line); padding-bottom:env(safe-area-inset-bottom); }
+  nav button { flex:1; background:none; color:var(--dim); border-radius:0; padding:12px 0; font-weight:500; }
+  nav button.on { color:var(--accent); font-weight:700; }
+  .hidden { display:none !important; }
+  .pill { display:inline-block; padding:2px 8px; border-radius:99px; font-size:13px; background:var(--bg); border:1px solid var(--line); }
+  canvas { max-width:100%; }
+  details summary { cursor:pointer; color:var(--dim); font-size:14px; }
+</style>
+</head>
+<body>
+<header><h1>牆泥車況</h1><small id="updated"></small></header>
+<main>
+
+<!-- first visit: project address, then login -->
+<section id="setup" class="hidden">
+  <div class="card">
+    <h2>第一次設定</h2>
+    <p class="dim">Supabase 專案 → Project Settings → API。這兩個只存在這支手機，不會放在網頁檔案裡。</p>
+    <label>專案網址</label><input id="sbUrl" placeholder="https://xxxx.supabase.co" autocapitalize="off">
+    <label>anon public key</label><input id="sbAnon" autocapitalize="off">
+    <button onclick="saveSetup()">下一步</button>
+  </div>
+</section>
+
+<section id="login" class="hidden">
+  <div class="card">
+    <h2>登入</h2>
+    <label>Email</label><input id="email" type="email" autocomplete="username">
+    <label>密碼</label><input id="password" type="password" autocomplete="current-password">
+    <button onclick="login()">登入</button> <span id="loginMsg" class="bad"></span>
+    <p><button class="ghost" onclick="resetSetup()">改專案網址</button></p>
+  </div>
+</section>
+
+<section id="tab-now" class="tab hidden"></section>
+<section id="tab-trips" class="tab hidden"></section>
+<section id="tab-charges" class="tab hidden"></section>
+<section id="tab-reports" class="tab hidden"></section>
+<section id="tab-settings" class="tab hidden"></section>
+</main>
+
+<nav id="nav" class="hidden">
+  <button data-tab="now" class="on">車況</button>
+  <button data-tab="trips">旅程</button>
+  <button data-tab="charges">充電</button>
+  <button data-tab="reports">報表</button>
+  <button data-tab="settings">設定</button>
+</nav>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const fmt = (v, d = 0) => (v === null || v === undefined || isNaN(v)) ? "--" : Number(v).toFixed(d);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const dt = (ms) => { const d = new Date(ms); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
+const dur = (ms) => { const m = Math.round(ms / 60000); return m >= 60 ? `${Math.floor(m / 60)} 小時 ${m % 60} 分` : `${m} 分`; };
+const ago = (ms) => { const m = Math.round((Date.now() - ms) / 60000); if (m < 1) return "剛剛"; if (m < 60) return `${m} 分鐘前`; if (m < 1440) return `${Math.round(m / 60)} 小時前`; return `${Math.round(m / 1440)} 天前`; };
+
+const DEFAULT_URL = "https://mmmhhgnmopvdjzspdkfb.supabase.co";
+const DEFAULT_KEY = "sb_publishable_6awiskZ188ou0bd62h_28A_JEP1_Vci";
+let sb = null, prefs = null, charts = [], maps = [];
+const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
+
+function show(id) { for (const s of ["setup", "login"]) $(s).classList.toggle("hidden", s !== id); }
+
+async function boot() {
+  // 預設：車主的 Supabase 專案（網址和 publishable key 本來就公開；資料靠登入＋RLS 保護）
+  const url = store.get("qn_url") || DEFAULT_URL, anon = store.get("qn_anon") || DEFAULT_KEY;
+  if (!url || !anon) { show("setup"); return; }
+  sb = supabase.createClient(url, anon, { auth: { persistSession: true, autoRefreshToken: true } });
+  const { data } = await sb.auth.getSession();
+  if (!data.session) { show("login"); return; }
+  show(null);
+  $("nav").classList.remove("hidden");
+  await loadPrefs();
+  openTab(store.get("qn_tab") || "now");
+}
+function saveSetup() {
+  const url = $("sbUrl").value.trim().replace(/\/$/, ""), anon = $("sbAnon").value.trim();
+  if (!/^https:\/\/.+/.test(url) || anon.length < 20) { alert("網址或 key 不對"); return; }
+  store.set("qn_url", url); store.set("qn_anon", anon); boot();
+}
+function resetSetup() { store.set("qn_url", ""); store.set("qn_anon", ""); show("setup"); }
+async function login() {
+  $("loginMsg").textContent = "";
+  const { error } = await sb.auth.signInWithPassword({ email: $("email").value.trim(), password: $("password").value });
+  if (error) { $("loginMsg").textContent = "登入失敗：" + error.message; return; }
+  boot();
+}
+
+document.querySelectorAll("nav button").forEach((b) => b.onclick = () => openTab(b.dataset.tab));
+function openTab(t) {
+  store.set("qn_tab", t);
+  document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("on", b.dataset.tab === t));
+  document.querySelectorAll(".tab").forEach((s) => s.classList.toggle("hidden", s.id !== "tab-" + t));
+  charts.forEach((c) => c.destroy()); charts = [];
+  maps.forEach((m) => m.remove()); maps = [];
+  ({ now: renderNow, trips: renderTrips, charges: renderCharges, reports: renderReports, settings: renderSettings })[t]();
+}
+
+// ------------------------------------------------------------ data helpers
+
+async function q(table, build, cols = "*") {
+  let r = sb.from(table).select(cols);
+  if (build) r = build(r);
+  const { data, error } = await r;
+  if (error) throw new Error(`${table}：${error.message}`);
+  return data;
+}
+/** Everything matching, 1000 rows a page (Supabase's page limit), up to [max]. */
+async function all(table, build, cols, max = 20000) {
+  const out = [];
+  for (let from = 0; from < max; from += 1000) {
+    const page = await q(table, (r) => build(r).range(from, from + 999), cols);
+    out.push(...page);
+    if (page.length < 1000) break;
+  }
+  return out;
+}
+async function loadPrefs() {
+  const rows = await q("prefs").catch(() => []);
+  prefs = Object.assign({ home_price: 2.0, public_price: 9.0, home_lat: null, home_lon: null, home_radius_m: 150, charge_target: 80,
+    tou_enabled: false, tou_plan: null, offpeak_start: "22:30", offpeak_end: "07:30", weekend_offpeak: true, home_peak_price: 5.0 }, rows[0] || {});
+  if (!prefs.tou_plan) prefs.tou_plan = rows[0] ? (prefs.tou_enabled ? "custom" : "none") : "simple2"; // 車主家是二段式
+}
+/**
+ * Taipower 住商型簡易時間電價 (from 2025-10-01; 夏月 6/1–9/30; weekends all off-peak; national holidays are off-peak at
+ * Taipower but not known here). Same hours as the car (Rules.kt). Prices per kWh, 元; check against your bill.
+ */
+const TOU = {
+  simple2: { name: "簡易型二段式", summer: { PEAK: 5.16, OFF: 2.06 }, winter: { PEAK: 4.93, OFF: 1.99 } },
+  simple3: { name: "簡易型三段式", summer: { PEAK: 7.13, HALF: 4.69, OFF: 2.06 }, winter: { HALF: 4.48, OFF: 1.99 } },
+};
+function hm(t) { const m = /^(\d{1,2}):(\d{2})$/.exec(t || ""); return m ? (Number(m[1]) * 60 + Number(m[2])) % 1440 : null; }
+function period(ms) {
+  const plan = prefs.tou_plan, d = new Date(ms), dow = d.getDay(), min = d.getHours() * 60 + d.getMinutes(), summer = d.getMonth() >= 5 && d.getMonth() <= 8;
+  if (plan === "custom") {
+    const a = hm(prefs.offpeak_start), b = hm(prefs.offpeak_end);
+    if (a === null || b === null || (prefs.weekend_offpeak && (dow === 0 || dow === 6))) return "OFF";
+    return (a <= b ? (min >= a && min < b) : (min >= a || min < b)) ? "OFF" : "PEAK";
+  }
+  if (!TOU[plan] || dow === 0 || dow === 6) return "OFF";
+  if (plan === "simple2") return summer ? (min < 540 ? "OFF" : "PEAK") : (min < 360 || (min >= 660 && min < 840) ? "OFF" : "PEAK");
+  if (summer) return min < 540 ? "OFF" : (min >= 960 && min < 1320) ? "PEAK" : "HALF";
+  return min < 360 || (min >= 660 && min < 840) ? "OFF" : "HALF";
+}
+const PERIOD_NAME = { OFF: "離峰", HALF: "半尖峰", PEAK: "尖峰" };
+const isPeak = (ms) => period(ms) !== "OFF";
+/** Home price per kWh at a moment: the Taipower table, or the owner's own two prices for "custom"/"none". */
+function homePrice(ms) {
+  const t = TOU[prefs.tou_plan];
+  if (t) { const m = new Date(ms).getMonth(); return (m >= 5 && m <= 8 ? t.summer : t.winter)[period(ms)]; }
+  return isPeak(ms) ? prefs.home_peak_price : prefs.home_price;
+}
+function metres(aLat, aLon, bLat, bLon) {
+  const r = 6371000, k = Math.PI / 180;
+  const x = (bLon - aLon) * k * Math.cos((aLat + bLat) / 2 * k), y = (bLat - aLat) * k;
+  return Math.sqrt(x * x + y * y) * r;
+}
+function mapIn(el, lat, lon, zoom = 15) {
+  const m = L.map(el, { attributionControl: true }).setView([lat, lon], zoom);
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap" }).addTo(m);
+  maps.push(m);
+  return m;
+}
+function chart(el, cfg) { const c = new Chart(el, cfg); charts.push(c); return c; }
+function fail(sec, e) { $(sec).innerHTML = `<div class="card"><h2>讀不到資料</h2><p class="bad">${esc(e.message)}</p><p class="dim">如果是 401／JWT：到「設定」登出再登入。</p></div>`; }
+
+/** Trip numbers used everywhere. */
+function tripInfo(t) {
+  const km = t.distance_m / 1000, net = t.kwh_used - t.kwh_regen;
+  const whkm = km >= 1 ? net * 1000 / km : null;
+  const regenPct = t.kwh_used > 0 ? t.kwh_regen / t.kwh_used * 100 : null;
+  const avg = t.moving_s > 0 ? km / (t.moving_s / 3600) : null;
+  return { km, net, whkm, regenPct, avg, score: score(t, km, whkm, regenPct) };
+}
+/**
+ * 駕駛評分 0–100: start at 100; hard accelerations / brakings per 10 km cost 8 each (max 40);
+ * consumption above 180 Wh/km costs 1 per 4 Wh/km (max 30); regen gives up to +10. Short trips (< 2 km) get no score.
+ */
+function score(t, km, whkm, regenPct) {
+  if (km < 2) return null;
+  let s = 100;
+  s -= Math.min(40, ((t.hard_accel || 0) + (t.hard_brake || 0)) / km * 10 * 8);
+  if (whkm !== null && whkm > 180) s -= Math.min(30, (whkm - 180) / 4);
+  if (regenPct !== null) s += Math.min(10, regenPct / 3);
+  return Math.max(0, Math.min(100, Math.round(s)));
+}
+const scoreClass = (s) => s === null ? "" : s >= 80 ? "good" : s >= 60 ? "warn" : "bad";
+
+/** Where a charge happened: the last GPS point before it started → home or not, and its price. */
+async function chargePlaces(charges) {
+  const out = new Map();
+  for (const c of charges) {
+    const p = await q("points", (r) => r.eq("device", c.device).lte("t", c.start_at).order("t", { ascending: false }).limit(1), "lat,lon").catch(() => []);
+    const pt = p[0];
+    const home = pt && prefs.home_lat !== null && metres(pt.lat, pt.lon, prefs.home_lat, prefs.home_lon) <= prefs.home_radius_m;
+    let price = home ? homePrice(c.start_at) : prefs.public_price;
+    if (home && prefs.tou_plan !== "none") {
+      // energy-weighted over the charging curve, so a charge that runs from peak into off-peak is priced right
+      const smp = await q("charge_samples", (r) => r.eq("device", c.device).eq("charge_id", c.car_id).order("t"), "t,kw").catch(() => []);
+      let e = 0, money = 0;
+      for (let i = 0; i + 1 < smp.length; i++) { const k = smp[i].kw * (smp[i + 1].t - smp[i].t) / 3600000; e += k; money += k * homePrice(smp[i].t); }
+      if (e > 0.5) price = money / e;
+    }
+    out.set(`${c.device}/${c.car_id}`, { pt, home, peak: home && isPeak(c.start_at), price });
+  }
+  return out;
+}
+
+// ------------------------------------------------------------ 車況
+
+async function renderNow() {
+  const sec = "tab-now";
+  $(sec).innerHTML = `<div class="card dim">讀取中…</div>`;
+  try {
+    const [st] = await q("car_status");
+    const parks = await q("parks", (r) => r.order("end_at", { ascending: false }).limit(1));
+    const [last] = await q("trips", (r) => r.eq("open", false).order("end_at", { ascending: false }).limit(1));
+    if (!st) { $(sec).innerHTML = `<div class="card"><h2>還沒有資料</h2><p class="dim">車上的牆泥行車紀錄設定好雲端（車機工具選單 15），有網路後一分鐘內會出現。</p></div>`; return; }
+    $("updated").textContent = "更新：" + ago(new Date(st.updated_at).getTime());
+    let h = `<div class="card"><div class="dim">電量</div><div class="big">${fmt(st.soc)}<small style="font-size:24px">%</small></div>
+      <div class="grid" style="margin-top:10px">
+        <div class="stat"><b>${fmt(st.range_km)} km</b><span>原廠續航</span></div>
+        <div class="stat"><b>${st.charging ? '<span class="good">充電中</span>' : st.plugged ? "插著槍" : st.parked ? "停車" : "行駛中"}</b><span>狀態</span></div>
+        <div class="stat"><b>${fmt(st.outside_c)}°C</b><span>車外溫度</span></div>
+        <div class="stat"><b>${st.car_time ? dt(st.car_time) : "--"}</b><span>車上最後回報</span></div>
+      </div></div>`;
+    if (st.charging) h += await chargingCard(st);
+    if (st.lat) h += `<div class="card"><h2>車在這裡</h2><div id="nowMap" class="map"></div>
+      <p><a href="https://maps.google.com/?q=${st.lat},${st.lon}">用 Google 地圖開</a>　<a href="https://maps.apple.com/?q=${st.lat},${st.lon}">用 Apple 地圖開</a></p></div>`;
+    const p = parks[0];
+    if (p && p.soc_start !== null && p.soc_end !== null) {
+      const hrs = (p.end_at - p.start_at) / 3600000, drop = p.soc_start - p.soc_end;
+      h += `<div class="card"><h2>上次停車</h2><div class="row"><span>${dt(p.start_at)} → ${dt(p.end_at)}</span><span>${fmt(hrs, 1)} 小時</span></div>
+        <div class="row"><span>${drop < -0.5 ? "期間有充電" : "掉了 " + fmt(drop, 1) + "%"}</span><span>${drop >= 0 && hrs >= 1 ? "每小時 " + fmt(drop / hrs, 2) + "%" : ""}</span></div></div>`;
+    }
+    if (last) {
+      const i = tripInfo(last);
+      h += `<div class="card"><h2>上一趟</h2><div class="row"><span>${dt(last.start_at)}　${fmt(i.km, 1)} km</span><span>${fmt(i.whkm)} Wh/km</span></div></div>`;
+    }
+    $(sec).innerHTML = h;
+    if (st.lat) L.marker([st.lat, st.lon]).addTo(mapIn("nowMap", st.lat, st.lon, 16));
+  } catch (e) { fail(sec, e); }
+}
+
+/**
+ * Live charging: power, energy, money so far, and time to the target / 100 % estimated from this car's own
+ * earlier charges (average kW per 5 % band, fast and slow charging kept apart); falls back to the current kW.
+ */
+async function chargingCard(st) {
+  const kw = st.charge_kw || 0, fast = kw >= 20;
+  const recent = await q("charges", (r) => r.eq("open", false).order("start_at", { ascending: false }).limit(40)).catch(() => []);
+  const caps = recent.filter((c) => c.soc_end - c.soc_start >= 20).map((c) => c.kwh_in / ((c.soc_end - c.soc_start) / 100));
+  const cap = caps.length ? caps.slice(0, 5).reduce((a, b) => a + b, 0) / Math.min(5, caps.length) : 75;
+  const same = recent.filter((c) => (c.max_kw >= 20) === fast).slice(0, 10);
+  const bands = {};
+  for (const c of same) {
+    const smp = await q("charge_samples", (r) => r.eq("device", c.device).eq("charge_id", c.car_id), "kw,soc").catch(() => []);
+    for (const x of smp) if (x.soc !== null && x.kw > 0.5) { const b = Math.floor(x.soc / 5); (bands[b] ||= []).push(x.kw); }
+  }
+  const bandKw = (b) => { const v = bands[b]; return v && v.length >= 3 ? v.reduce((a, c) => a + c, 0) / v.length : kw; };
+  const minutesTo = (target) => {
+    if (st.soc === null || st.soc >= target || kw <= 0.5) return null;
+    let m = 0;
+    for (let soc = st.soc; soc < target; soc += 1) m += cap / 100 / Math.max(0.5, bandKw(Math.floor(soc / 5))) * 60;
+    return Math.round(m);
+  };
+  const tgt = prefs.charge_target, mT = tgt ? minutesTo(tgt) : null, m100 = minutesTo(100);
+  const home = prefs.home_lat !== null && st.lat && metres(st.lat, st.lon, prefs.home_lat, prefs.home_lon) <= prefs.home_radius_m;
+  const price = home ? homePrice(st.charge_start || Date.now()) : prefs.public_price;
+  const eta = (m) => m === null ? "--" : `${dur(m * 60000)}（${dt(Date.now() + m * 60000).slice(-5)}）`;
+  return `<div class="card"><h2>⚡ 充電中</h2><div class="grid">
+      <div class="stat"><b class="good">${fmt(kw, 1)} kW</b><span>${fast ? "快充" : "慢充"}</span></div>
+      <div class="stat"><b>${fmt(st.charge_kwh, 1)} kWh</b><span>已充進</span></div>
+      <div class="stat"><b>${st.charge_start ? dur(Date.now() - st.charge_start) : "--"}</b><span>充了多久</span></div>
+      <div class="stat"><b>${fmt((st.charge_kwh || 0) * price)} 元</b><span>目前費用（${home ? "家・" + PERIOD_NAME[period(Date.now())] : "外面"}每度 ${price}）</span></div></div>
+    ${tgt ? `<div class="row"><span>到 ${tgt}%</span><b>${eta(mT)}</b></div>` : ""}
+    <div class="row"><span>到 100%</span><b>${eta(m100)}</b></div>
+    <p class="dim">預估用這台車過去${fast ? "快充" : "慢充"}的曲線算${Object.keys(bands).length ? "" : "（還沒有紀錄，先用目前功率估）"}；電池約 ${fmt(cap)} kWh。到 ${tgt ?? "--"}% 會用 Telegram 通知（設定裡改）。</p></div>`;
+}
+
+// ------------------------------------------------------------ 旅程
+
+async function renderTrips() {
+  const sec = "tab-trips";
+  $(sec).innerHTML = `<div class="card dim">讀取中…</div>`;
+  try {
+    const trips = await q("trips", (r) => r.order("start_at", { ascending: false }).limit(50));
+    let h = `<div class="card"><h2>最近旅程</h2>`;
+    if (!trips.length) h += `<p class="dim">還沒有旅程。</p>`;
+    for (const t of trips) {
+      const i = tripInfo(t);
+      h += `<div class="item" onclick="tripDetail('${esc(t.device)}', ${t.car_id})">
+        <div class="t">${dt(t.start_at)}${t.open ? ' <span class="pill">進行中</span>' : ""}　${fmt(i.km, 1)} km　${dur(t.end_at - t.start_at)}</div>
+        <div class="dim">${fmt(i.whkm)} Wh/km・回收 ${fmt(i.regenPct)}%・平均 ${fmt(i.avg)} km/h　${i.score === null ? "" : `評分 <b class="${scoreClass(i.score)}">${i.score}</b>`}</div></div>`;
+    }
+    $(sec).innerHTML = h + `</div><p class="dim">評分：急加速／急煞（每 10 km 一次扣 8 分）、電耗超過 180 Wh/km 扣分、回收多加分；2 km 以下不評分。</p>`;
+  } catch (e) { fail(sec, e); }
+}
+
+async function tripDetail(device, id) {
+  const sec = "tab-trips";
+  maps.forEach((m) => m.remove()); maps = [];
+  try {
+    const [t] = await q("trips", (r) => r.eq("device", device).eq("car_id", id));
+    const pts = await all("points", (r) => r.eq("device", device).eq("trip_id", id).order("t"), "lat,lon,kmh,t");
+    const i = tripInfo(t);
+    $(sec).innerHTML = `<p><button class="ghost" onclick="renderTrips()">← 回旅程列表</button></p>
+      <div class="card"><h2>${dt(t.start_at)} → ${dt(t.end_at)}</h2>
+        <div class="grid">
+          <div class="stat"><b>${fmt(i.km, 1)} km</b><span>里程（車速推算）</span></div>
+          <div class="stat"><b>${fmt(i.whkm)}</b><span>Wh/km</span></div>
+          <div class="stat"><b>${fmt(t.kwh_used, 2)} kWh</b><span>用電</span></div>
+          <div class="stat"><b class="good">${fmt(t.kwh_regen, 2)} kWh</b><span>回收（${fmt(i.regenPct)}%）</span></div>
+          <div class="stat"><b>${fmt(i.avg)} / ${fmt(t.max_kmh)}</b><span>平均／最高 km/h</span></div>
+          <div class="stat"><b>${fmt(t.soc_start)}→${fmt(t.soc_end)}%</b><span>電量</span></div>
+          <div class="stat"><b>${t.hard_accel || 0} / ${t.hard_brake || 0}</b><span>急加速／急煞</span></div>
+          <div class="stat"><b class="${scoreClass(i.score)}">${i.score ?? "--"}</b><span>評分</span></div>
+        </div>
+        ${pts.length ? `<div id="tripMap" class="map"></div>` : `<p class="dim">這趟沒有 GPS 點。</p>`}
+      </div>`;
+    if (pts.length) {
+      const m = mapIn("tripMap", pts[0].lat, pts[0].lon);
+      const line = L.polyline(pts.map((p) => [p.lat, p.lon]), { color: "#2563eb", weight: 4 }).addTo(m);
+      m.fitBounds(line.getBounds(), { padding: [20, 20] });
+    }
+  } catch (e) { fail(sec, e); }
+}
+
+// ------------------------------------------------------------ 充電
+
+async function renderCharges() {
+  const sec = "tab-charges";
+  $(sec).innerHTML = `<div class="card dim">讀取中…</div>`;
+  try {
+    const charges = await q("charges", (r) => r.order("start_at", { ascending: false }).limit(30));
+    const places = await chargePlaces(charges);
+    let h = `<div class="card"><h2>最近充電</h2>`;
+    if (!charges.length) h += `<p class="dim">還沒有充電紀錄。</p>`;
+    for (const c of charges) {
+      const pl = places.get(`${c.device}/${c.car_id}`);
+      const gain = c.soc_end !== null && c.soc_start !== null ? c.soc_end - c.soc_start : null;
+      const cap = gain !== null && gain >= 20 ? c.kwh_in / (gain / 100) : null;
+      h += `<div class="item" onclick="chargeDetail('${esc(c.device)}', ${c.car_id})">
+        <div class="t">${dt(c.start_at)}${c.open ? ' <span class="pill">充電中</span>' : ""}　${fmt(c.soc_start)}→${fmt(c.soc_end)}%　${pl.home ? "🏠 家裡" : "外面"}</div>
+        <div class="dim">${fmt(c.kwh_in, 1)} kWh・最高 ${fmt(c.max_kw, 1)} kW・${dur(c.end_at - c.start_at)}・約 ${fmt(c.kwh_in * pl.price)} 元${cap ? `・推算電池 ${fmt(cap)} kWh` : ""}</div></div>`;
+    }
+    $(sec).innerHTML = h + `</div><p class="dim">費用＝充進電池的度數 × 電價（設定裡改）。牆上插座實際用電通常再多約 10%。「家裡」用家的位置判斷（設定裡設）。</p>`;
+  } catch (e) { fail(sec, e); }
+}
+
+async function chargeDetail(device, id) {
+  const sec = "tab-charges";
+  charts.forEach((c) => c.destroy()); charts = [];
+  try {
+    const [c] = await q("charges", (r) => r.eq("device", device).eq("car_id", id));
+    const s = await all("charge_samples", (r) => r.eq("device", device).eq("charge_id", id).order("t"), "t,kw,soc");
+    $(sec).innerHTML = `<p><button class="ghost" onclick="renderCharges()">← 回充電列表</button></p>
+      <div class="card"><h2>${dt(c.start_at)} 充電曲線</h2>
+      ${s.length ? `<canvas id="curve" height="260"></canvas>` : `<p class="dim">沒有曲線資料。</p>`}
+      <div class="row"><span>${fmt(c.soc_start)}→${fmt(c.soc_end)}%</span><span>${fmt(c.kwh_in, 1)} kWh・最高 ${fmt(c.max_kw, 1)} kW</span></div>
+      <div class="row"><span>${dur(c.end_at - c.start_at)}</span><span>${esc(c.ended_how)}</span></div></div>`;
+    if (s.length) chart($("curve"), {
+      type: "line",
+      data: { labels: s.map((x) => Math.round((x.t - c.start_at) / 60000)), datasets: [
+        { label: "kW", data: s.map((x) => x.kw), yAxisID: "kw", borderColor: "#2563eb", pointRadius: 0, tension: .2 },
+        { label: "電量 %", data: s.map((x) => x.soc), yAxisID: "soc", borderColor: "#16a34a", pointRadius: 0, tension: .2 },
+      ] },
+      options: { interaction: { mode: "index", intersect: false }, scales: {
+        x: { title: { display: true, text: "分鐘" } },
+        kw: { position: "left", title: { display: true, text: "kW" } },
+        soc: { position: "right", min: 0, max: 100, grid: { drawOnChartArea: false }, title: { display: true, text: "%" } } } },
+    });
+  } catch (e) { fail(sec, e); }
+}
+
+// ------------------------------------------------------------ 報表
+
+async function renderReports() {
+  const sec = "tab-reports";
+  $(sec).innerHTML = `<div class="card dim">讀取中…</div>`;
+  try {
+    const since = Date.now() - 365 * 86400000;
+    const trips = await all("trips", (r) => r.eq("open", false).gte("start_at", since).order("start_at"));
+    const charges = await all("charges", (r) => r.eq("open", false).gte("start_at", Date.now() - 90 * 86400000).order("start_at"));
+    const parks = await all("parks", (r) => r.gte("start_at", Date.now() - 90 * 86400000).order("start_at"));
+    const places = await chargePlaces(charges.slice(-60));
+
+    const sum = (from) => {
+      const ts = trips.filter((t) => t.start_at >= from);
+      const km = ts.reduce((a, t) => a + t.distance_m / 1000, 0), kwh = ts.reduce((a, t) => a + t.kwh_used - t.kwh_regen, 0);
+      const cs = charges.filter((c) => c.start_at >= from);
+      const cost = cs.reduce((a, c) => a + c.kwh_in * (places.get(`${c.device}/${c.car_id}`)?.price ?? prefs.public_price), 0);
+      return { n: ts.length, km, kwh, whkm: km > 0 ? kwh * 1000 / km : null, cost, perKm: km > 0 ? cost / km : null };
+    };
+    const now = new Date(), week = new Date(now); week.setDate(now.getDate() - ((now.getDay() + 6) % 7)); week.setHours(0, 0, 0, 0);
+    const month = new Date(now.getFullYear(), now.getMonth(), 1);
+    const w = sum(week.getTime()), m = sum(month.getTime());
+    const block = (title, s) => `<div class="card"><h2>${title}</h2><div class="grid">
+      <div class="stat"><b>${fmt(s.km)} km</b><span>${s.n} 趟</span></div>
+      <div class="stat"><b>${fmt(s.whkm)}</b><span>Wh/km</span></div>
+      <div class="stat"><b>${fmt(s.cost)} 元</b><span>充電費用（約）</span></div>
+      <div class="stat"><b>${fmt(s.perKm, 2)} 元</b><span>每公里</span></div></div></div>`;
+
+    // parking drain per hour (only parks ≥ 1 h without charging)
+    const pd = parks.filter((p) => p.soc_start !== null && p.soc_end !== null && p.end_at - p.start_at >= 3600000 && p.soc_start - p.soc_end >= 0)
+      .map((p) => (p.soc_start - p.soc_end) / ((p.end_at - p.start_at) / 3600000));
+    const pdAvg = pd.length ? pd.reduce((a, b) => a + b, 0) / pd.length : null;
+
+    // battery health: usable capacity from charges that added ≥ 20 %
+    const caps = charges.filter((c) => c.soc_end - c.soc_start >= 20).map((c) => ({ x: c.start_at, y: c.kwh_in / ((c.soc_end - c.soc_start) / 100) }));
+
+    const scored = trips.slice(-30).map((t) => tripInfo(t).score).filter((s) => s !== null);
+
+    // 每月充電：近 6 個月
+    const months = [];
+    for (let k = 5; k >= 0; k--) { const d = new Date(now.getFullYear(), now.getMonth() - k, 1); months.push([d.getTime(), new Date(d.getFullYear(), d.getMonth() + 1, 1).getTime(), `${d.getMonth() + 1} 月`]); }
+    const allCharges = await all("charges", (r) => r.eq("open", false).gte("start_at", months[0][0]).order("start_at"));
+    const mPlaces = await chargePlaces(allCharges.filter((c) => !places.has(`${c.device}/${c.car_id}`)));
+    for (const [k, v] of places) mPlaces.set(k, v);
+    const monthRows = months.map(([a, b, label]) => {
+      const cs = allCharges.filter((c) => c.start_at >= a && c.start_at < b);
+      const kwh = cs.reduce((x, c) => x + c.kwh_in, 0);
+      const cost = cs.reduce((x, c) => x + c.kwh_in * (mPlaces.get(`${c.device}/${c.car_id}`)?.price ?? prefs.public_price), 0);
+      const homeKwh = cs.filter((c) => mPlaces.get(`${c.device}/${c.car_id}`)?.home).reduce((x, c) => x + c.kwh_in, 0);
+      const fastKwh = cs.filter((c) => c.max_kw >= 20).reduce((x, c) => x + c.kwh_in, 0);
+      return { label, n: cs.length, kwh, cost, home: kwh ? homeKwh / kwh * 100 : null, fast: kwh ? fastKwh / kwh * 100 : null };
+    });
+    const monthTable = `<div class="card"><h2>每月充電</h2><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums">
+      <tr class="dim"><th align="left">月份</th><th align="right">次</th><th align="right">度</th><th align="right">元</th><th align="right">每度</th><th align="right">家充</th><th align="right">快充</th></tr>
+      ${monthRows.map((m) => `<tr style="border-top:1px solid var(--line)"><td>${m.label}</td><td align="right">${m.n}</td><td align="right">${fmt(m.kwh)}</td><td align="right">${fmt(m.cost)}</td>
+        <td align="right">${m.kwh ? fmt(m.cost / m.kwh, 1) : "--"}</td><td align="right">${m.home === null ? "--" : fmt(m.home) + "%"}</td><td align="right">${m.fast === null ? "--" : fmt(m.fast) + "%"}</td></tr>`).join("")}
+      </table></div><p class="dim">家充／快充是占充電度數的比例。快充＝最高功率 20 kW 以上。</p></div>`;
+
+    // 電池保養（近 90 天）
+    const fastShare = charges.length ? charges.filter((c) => c.max_kw >= 20).length / charges.length * 100 : null;
+    const highHours = parks.filter((p) => p.soc_start !== null && p.soc_start >= 90).reduce((x, p) => x + (p.end_at - p.start_at) / 3600000, 0);
+    const lowCount = trips.filter((t) => t.start_at >= Date.now() - 90 * 86400000 && t.soc_end !== null && t.soc_end < 10).length
+      + charges.filter((c) => c.soc_start !== null && c.soc_start < 10).length;
+    const full = charges.filter((c) => c.soc_end >= 99).length;
+    const care = (v, good, ok) => v === null ? "" : v <= good ? "good" : v <= ok ? "warn" : "bad";
+    const careCard = `<div class="card"><h2>電池保養（近 90 天）</h2>
+      <div class="row"><span>快充占充電次數</span><b class="${care(fastShare, 30, 60)}">${fastShare === null ? "--" : fmt(fastShare) + "%"}</b></div>
+      <div class="row"><span>停在 90% 以上的時間</span><b class="${care(highHours, 48, 168)}">${fmt(highHours)} 小時</b></div>
+      <div class="row"><span>充到 100% 的次數</span><b>${full}</b></div>
+      <div class="row"><span>電量掉到 10% 以下</span><b class="${care(lowCount, 0, 3)}">${lowCount} 次</b></div>
+      <p class="dim">一般建議：平常充到 80～90%，要遠行再充滿；充滿後不要放很久；少讓電量掉到 10% 以下；快充方便但不要天天用。顏色只是參考。</p></div>`;
+    $(sec).innerHTML = block("這週", w) + block("這個月", m) + monthTable + careCard + `
+      <div class="card"><h2>其他</h2>
+        <div class="row"><span>停車耗電（近 90 天平均）</span><b>${pdAvg === null ? "--" : fmt(pdAvg, 2) + " %/小時"}</b></div>
+        <div class="row"><span>最近 30 趟平均評分</span><b>${scored.length ? Math.round(scored.reduce((a, b) => a + b, 0) / scored.length) : "--"}</b></div>
+        <div class="row"><span>推算電池可用容量（最近）</span><b>${caps.length ? fmt(caps[caps.length - 1].y, 1) + " kWh" : "--"}</b></div></div>
+      <div class="card"><h2>電耗和車外溫度</h2><canvas id="cTemp" height="220"></canvas></div>
+      <div class="card"><h2>電耗和平均車速</h2><canvas id="cSpeed" height="220"></canvas></div>
+      <div class="card"><h2>電池健康（推算可用容量）</h2>${caps.length ? `<canvas id="cCap" height="200"></canvas>` : `<p class="dim">要有一次充電超過 20% 才算得出來。</p>`}</div>
+      <div class="card"><h2>終生行車地圖</h2><p class="dim">把一年內所有 GPS 點畫出來，資料多時要等一下。</p><button onclick="lifetimeMap()">畫出來</button><div id="lifeMap" class="map hidden"></div></div>`;
+
+    const pts = trips.map((t) => ({ t, i: tripInfo(t) })).filter((x) => x.i.whkm !== null && x.i.km >= 2);
+    const scatter = (el, xs, label) => chart($(el), { type: "scatter",
+      data: { datasets: [{ label: "每一趟", data: xs, backgroundColor: "#2563eb" }] },
+      options: { plugins: { legend: { display: false } }, scales: { x: { title: { display: true, text: label } }, y: { title: { display: true, text: "Wh/km" } } } } });
+    scatter("cTemp", pts.filter((x) => x.t.temp_avg !== null).map((x) => ({ x: x.t.temp_avg, y: x.i.whkm })), "°C");
+    scatter("cSpeed", pts.filter((x) => x.i.avg !== null).map((x) => ({ x: x.i.avg, y: x.i.whkm })), "km/h");
+    if (caps.length) chart($("cCap"), { type: "line",
+      data: { labels: caps.map((c) => dt(c.x)), datasets: [{ label: "kWh", data: caps.map((c) => c.y), borderColor: "#16a34a", tension: .3 }] },
+      options: { plugins: { legend: { display: false } } } });
+  } catch (e) { fail(sec, e); }
+}
+
+async function lifetimeMap() {
+  const el = $("lifeMap");
+  el.classList.remove("hidden");
+  el.innerHTML = `<p class="dim" style="padding:12px">讀取中…</p>`;
+  try {
+    const pts = await all("points", (r) => r.gte("t", Date.now() - 365 * 86400000).order("t"), "lat,lon,trip_id,device", 100000);
+    el.innerHTML = "";
+    if (!pts.length) { el.innerHTML = `<p class="dim" style="padding:12px">沒有 GPS 點。</p>`; return; }
+    const m = mapIn(el, pts[0].lat, pts[0].lon, 11);
+    const groups = new Map();
+    for (const p of pts) { const k = p.device + "/" + p.trip_id; if (!groups.has(k)) groups.set(k, []); groups.get(k).push([p.lat, p.lon]); }
+    const all_ = [];
+    for (const g of groups.values()) { L.polyline(g, { color: "#dc2626", weight: 3, opacity: .45 }).addTo(m); all_.push(...g); }
+    m.fitBounds(L.latLngBounds(all_), { padding: [20, 20] });
+  } catch (e) { el.innerHTML = `<p class="bad" style="padding:12px">${esc(e.message)}</p>`; }
+}
+
+// ------------------------------------------------------------ 設定
+
+function renderSettings() {
+  const p = prefs;
+  $("tab-settings").innerHTML = `<div class="card"><h2>電價</h2>
+      <label>家充每度（元；累進電價填平均每度，時間電價會用台電費率表）</label><input id="pHome" type="number" step="0.01" value="${p.home_price}">
+      <label>外面充電每度（元）</label><input id="pPublic" type="number" step="0.01" value="${p.public_price}">
+    </div>
+    <div class="card"><h2>充電通知</h2>
+      <label>充到幾 % 用 Telegram 通知（空白＝不通知）</label><input id="pTarget" type="number" min="20" max="100" value="${p.charge_target ?? ""}">
+    </div>
+    <div class="card"><h2>家裡的電價</h2>
+      <p class="dim">看電費單上的「電價種類」。選了時間電價後，家充費用會照尖峰／離峰分開算，尖峰時段在家開始充電，車子也會提醒你等離峰。</p>
+      <select id="pPlan" style="width:100%;padding:10px;border-radius:10px;margin:4px 0 10px">
+        ${[["none", "累進電價（一般住家，沒有尖峰離峰）"], ["simple2", "簡易型時間電價：二段式"], ["simple3", "簡易型時間電價：三段式"], ["custom", "其他（自己填離峰時段）"]]
+          .map(([v, n]) => `<option value="${v}" ${p.tou_plan === v ? "selected" : ""}>${n}</option>`).join("")}
+      </select>
+      ${TOU[p.tou_plan] ? `<div class="dim">${(() => { const t = TOU[p.tou_plan], f2 = (o) => Object.entries(o).map(([k, v]) => `${PERIOD_NAME[k]} ${v}`).join("、");
+        return `夏月（6/1～9/30）：${f2(t.summer)} 元<br>非夏月：${f2(t.winter)} 元<br>${p.tou_plan === "simple2"
+          ? "夏月平日 00:00–09:00 離峰，其他尖峰；非夏月平日 00:00–06:00、11:00–14:00 離峰，其他尖峰。"
+          : "夏月平日 00:00–09:00 離峰、16:00–22:00 尖峰、其他半尖峰；非夏月平日 00:00–06:00、11:00–14:00 離峰，其他半尖峰。"}週六日全天離峰。<br>台電 2025/10/1 起的費率（每月基本電費 75 元、超過 2000 度另加 1.04 元/度沒算進去）。國定假日台電也算離峰，這裡沒算。數字跟電費單不同請告訴我。`; })()}</div>` : ""}
+      <div id="customTou" class="${p.tou_plan === "custom" ? "" : "hidden"}">
+        <label>離峰開始（例如 22:30）</label><input id="pOffStart" value="${esc(p.offpeak_start ?? "")}">
+        <label>離峰結束（例如 07:30）</label><input id="pOffEnd" value="${esc(p.offpeak_end ?? "")}">
+        <label><input id="pWeekend" type="checkbox" style="width:auto" ${p.weekend_offpeak ? "checked" : ""}> 週六日全天離峰</label>
+        <label>尖峰每度（元）</label><input id="pPeak" type="number" step="0.01" value="${p.home_peak_price}">
+      </div>
+    </div>
+    <div class="card"><h2>家的位置</h2>
+      <p class="dim">在家附近充電就算家充。人在家時按「用現在位置」。</p>
+      <p>${p.home_lat !== null ? `目前：${fmt(p.home_lat, 4)}, ${fmt(p.home_lon, 4)}` : "還沒設定"}</p>
+      <button class="ghost" onclick="useHere()">用現在位置</button>
+      <label>半徑（公尺）</label><input id="pRadius" type="number" value="${p.home_radius_m}">
+    </div>
+    <p><button onclick="savePrefs()">儲存</button> <span id="prefMsg"></span></p>
+    <div class="card"><h2>帳號</h2><button class="ghost" onclick="logout()">登出</button></div>
+    <details><summary>關於</summary><p class="dim">資料來源：車上的牆泥行車紀錄，每分鐘上傳一次（斷網會補傳）。里程是用車速算的，和儀表會有一點差距。</p></details>`;
+}
+document.addEventListener("change", (e) => {
+  if (e.target && e.target.id === "pPlan") { prefs.tou_plan = e.target.value; renderSettings(); }
+});
+function useHere() {
+  navigator.geolocation.getCurrentPosition((pos) => { prefs.home_lat = pos.coords.latitude; prefs.home_lon = pos.coords.longitude; renderSettings(); },
+    (e) => alert("拿不到位置：" + e.message), { enableHighAccuracy: true, timeout: 15000 });
+}
+async function savePrefs() {
+  prefs.home_price = Number($("pHome").value); prefs.public_price = Number($("pPublic").value); prefs.home_radius_m = Number($("pRadius").value);
+  const t = $("pTarget").value.trim();
+  prefs.charge_target = t === "" ? null : Math.max(20, Math.min(100, Math.round(Number(t))));
+  prefs.tou_plan = $("pPlan").value; prefs.tou_enabled = prefs.tou_plan !== "none";
+  prefs.weekend_offpeak = $("pWeekend").checked; prefs.home_peak_price = Number($("pPeak").value);
+  prefs.offpeak_start = $("pOffStart").value.trim(); prefs.offpeak_end = $("pOffEnd").value.trim();
+  if (prefs.tou_plan === "custom" && (hm(prefs.offpeak_start) === null || hm(prefs.offpeak_end) === null)) { $("prefMsg").textContent = "離峰時間要寫成 22:30 這樣"; return; }
+  const { error } = await sb.from("prefs").upsert({ home_price: prefs.home_price, public_price: prefs.public_price,
+    home_lat: prefs.home_lat, home_lon: prefs.home_lon, home_radius_m: prefs.home_radius_m, charge_target: prefs.charge_target,
+    tou_enabled: prefs.tou_enabled, tou_plan: prefs.tou_plan, offpeak_start: prefs.offpeak_start, offpeak_end: prefs.offpeak_end,
+    weekend_offpeak: prefs.weekend_offpeak, home_peak_price: prefs.home_peak_price }, { onConflict: "user_id" });
+  $("prefMsg").textContent = error ? "儲存失敗：" + error.message : "已儲存";
+}
+async function logout() { await sb.auth.signOut(); location.reload(); }
+
+boot();
+</script>
+</body>
+</html>
