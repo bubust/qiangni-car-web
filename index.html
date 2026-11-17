@@ -79,6 +79,7 @@
 <section id="tab-trips" class="tab hidden"></section>
 <section id="tab-charges" class="tab hidden"></section>
 <section id="tab-reports" class="tab hidden"></section>
+<section id="tab-key" class="tab hidden"></section>
 <section id="tab-settings" class="tab hidden"></section>
 </main>
 
@@ -87,6 +88,7 @@
   <button data-tab="trips">旅程</button>
   <button data-tab="charges">充電</button>
   <button data-tab="reports">報表</button>
+  <button data-tab="key">鑰匙</button>
   <button data-tab="settings">設定</button>
 </nav>
 
@@ -138,7 +140,7 @@ function openTab(t) {
   document.querySelectorAll(".tab").forEach((s) => s.classList.toggle("hidden", s.id !== "tab-" + t));
   charts.forEach((c) => c.destroy()); charts = [];
   maps.forEach((m) => m.remove()); maps = [];
-  ({ now: renderNow, trips: renderTrips, charges: renderCharges, reports: renderReports, settings: renderSettings })[t]();
+  ({ now: renderNow, trips: renderTrips, charges: renderCharges, reports: renderReports, key: renderKey, settings: renderSettings })[t]();
 }
 
 // ------------------------------------------------------------ data helpers
@@ -163,7 +165,8 @@ async function all(table, build, cols, max = 20000) {
 async function loadPrefs() {
   const rows = await q("prefs").catch(() => []);
   prefs = Object.assign({ home_price: 2.0, public_price: 9.0, home_lat: null, home_lon: null, home_radius_m: 150, charge_target: 80,
-    tou_enabled: false, tou_plan: null, offpeak_start: "22:30", offpeak_end: "07:30", weekend_offpeak: true, home_peak_price: 5.0 }, rows[0] || {});
+    tou_enabled: false, tou_plan: null, offpeak_start: "22:30", offpeak_end: "07:30", weekend_offpeak: true, home_peak_price: 5.0,
+    service_every_km: 0, service_base_km: null }, rows[0] || {});
   if (!prefs.tou_plan) prefs.tou_plan = rows[0] ? (prefs.tou_enabled ? "custom" : "none") : "simple2"; // 車主家是二段式
 }
 /**
@@ -530,6 +533,99 @@ async function lifetimeMap() {
 
 // ------------------------------------------------------------ 設定
 
+// ------------------------------------------------------------ 鑰匙（Web Bluetooth：直接開/鎖鑰匙盒）
+
+const BOX = {
+  SVC: "6e400001-b5a3-f393-e0a9-e50e24dcca9f",
+  RX: "6e400002-b5a3-f393-e0a9-e50e24dcca9f",   // write
+  TX: "6e400003-b5a3-f393-e0a9-e50e24dcca9f",   // notify
+  LOCK: Uint8Array.of(0x01, 0x01, 0x02, 0x22, 0x00),
+  UNLOCK: Uint8Array.of(0x01, 0x01, 0x02, 0x22, 0x01),
+};
+let keyBusy = false;
+
+function keyCode() { try { return localStorage.getItem("qnBoxCode") || ""; } catch { return ""; } }
+function keyHexToBytes(s) {
+  s = s.replace(/[\s:]/g, "").toLowerCase();
+  if (s.length % 2 || s.length < 20 || s.length > 128 || /[^0-9a-f]/.test(s)) return null;
+  const a = new Uint8Array(s.length / 2);
+  for (let i = 0; i < a.length; i++) a[i] = parseInt(s.substr(i * 2, 2), 16);
+  return a;
+}
+function keyToHex(dv) { let s = ""; for (let i = 0; i < dv.byteLength; i++) s += dv.getUint8(i).toString(16).padStart(2, "0"); return s; }
+function keyStatus(msg, cls) { const e = $("keyStatus"); if (e) { e.textContent = msg; e.className = "dim " + (cls || ""); } }
+
+function renderKey() {
+  const p = keyCode();
+  $("tab-key").innerHTML = `
+    <div style="display:flex;gap:14px;margin:6px 0 10px">
+      <button id="kUnlock" style="flex:1;font-size:28px;font-weight:700;padding:30px 0;border:0;border-radius:18px;color:#fff;background:#1f7a3d">解鎖</button>
+      <button id="kLock" style="flex:1;font-size:28px;font-weight:700;padding:30px 0;border:0;border-radius:18px;color:#fff;background:#8a2b2b">上鎖</button>
+    </div>
+    <div id="keyStatus" class="dim" style="min-height:24px;font-size:17px;margin:6px 2px">${p ? "準備好了" : "先在下面設定登入碼"}</div>
+    <div class="card"><h2>怎麼用</h2>
+      <p class="dim">用藍牙直接開/鎖你的鑰匙盒（手動一鍵，不是人到自動開）。<b>iPhone 要用 Bluefy 瀏覽器開這一頁</b>（Safari 不支援網頁藍牙）；安卓用 Chrome。第一次會跳裝置選單，選到 BL 開頭的盒子。車機正在連盒子時先別同時用，會互搶。</p>
+    </div>
+    <div class="card"><h2>登入碼（只存這支手機，不上傳）</h2>
+      <p class="dim">跟你在車上「牆泥鑰匙」輸入的同一組，十六進位、可有空白。</p>
+      <input id="kCode" type="text" inputmode="latin" autocomplete="off" placeholder="例如 01011144a0dd…" value="${esc(p)}" style="width:100%;padding:12px;border-radius:10px;margin:4px 0 10px">
+      <div style="display:flex;gap:10px">
+        <button id="kSave" class="ghost" style="flex:1">儲存登入碼</button>
+        <button id="kForget" class="ghost" style="flex:1">清除</button>
+      </div>
+    </div>`;
+  $("kSave").onclick = () => {
+    const b = keyHexToBytes($("kCode").value);
+    if (!b) { keyStatus("登入碼格式不對（十六進位、10–64 位元組）", "bad"); return; }
+    try { localStorage.setItem("qnBoxCode", $("kCode").value.replace(/[\s:]/g, "").toLowerCase()); } catch {}
+    keyStatus("登入碼已存在這支手機", "good");
+  };
+  $("kForget").onclick = () => { try { localStorage.removeItem("qnBoxCode"); } catch {}; $("kCode").value = ""; keyStatus("已清除登入碼", ""); };
+  $("kUnlock").onclick = () => runKey("unlock");
+  $("kLock").onclick = () => runKey("lock");
+}
+
+async function runKey(want) {
+  if (keyBusy) return;
+  if (!navigator.bluetooth) { keyStatus("這個瀏覽器不支援網頁藍牙。iPhone 用 Bluefy、安卓用 Chrome。", "bad"); return; }
+  const codeBytes = keyHexToBytes(keyCode());
+  if (!codeBytes) { keyStatus("先設定登入碼", "bad"); return; }
+  keyBusy = true; $("kUnlock").disabled = $("kLock").disabled = true;
+  const label = want === "unlock" ? "解鎖" : "上鎖";
+  let gatt = null, done = false, cmdSent = false;
+  const finish = (ok, msg) => {
+    if (done) return; done = true;
+    keyStatus((ok ? "✓ " : "✗ ") + msg, ok ? "good" : "bad");
+    try { gatt && gatt.disconnect(); } catch {}
+    keyBusy = false; const u = $("kUnlock"), l = $("kLock"); if (u) u.disabled = false; if (l) l.disabled = false;
+  };
+  try {
+    keyStatus("選擇你的盒子…");
+    const dev = await navigator.bluetooth.requestDevice({ filters: [{ namePrefix: "BL" }, { services: [BOX.SVC] }], optionalServices: [BOX.SVC] });
+    keyStatus("連線中…");
+    gatt = await dev.gatt.connect();
+    const svc = await gatt.getPrimaryService(BOX.SVC);
+    const rx = await svc.getCharacteristic(BOX.RX);
+    const tx = await svc.getCharacteristic(BOX.TX);
+    const sendCmd = async () => { if (cmdSent) return; cmdSent = true; keyStatus("送" + label + "…"); await rx.writeValueWithoutResponse(want === "unlock" ? BOX.UNLOCK : BOX.LOCK); };
+    await tx.startNotifications();
+    tx.addEventListener("characteristicvaluechanged", (e) => {
+      const h = keyToHex(e.target.value);
+      if (h.startsWith("010102f044")) { sendCmd(); return; }
+      const i = h.indexOf("f026");
+      if (i >= 0 && i % 2 === 0) {
+        const st = h.substr(i + 4, 2);
+        if (want === "unlock" && st === "01") finish(true, "盒子回報：已打開");
+        else if (want === "lock" && st === "00") finish(true, "盒子回報：已上鎖");
+      }
+    });
+    keyStatus("登入…");
+    await rx.writeValueWithoutResponse(codeBytes);
+    setTimeout(() => { if (!done && !cmdSent) sendCmd(); }, 1200);
+    setTimeout(() => finish(false, "盒子 15 秒內沒回報（不在附近、沒電，或被車機佔住連線）"), 15000);
+  } catch (err) { finish(false, (err && err.message) ? err.message : "連不上"); }
+}
+
 function renderSettings() {
   const p = prefs;
   $("tab-settings").innerHTML = `<div class="card"><h2>電價</h2>
@@ -562,6 +658,11 @@ function renderSettings() {
       <button class="ghost" onclick="useHere()">用現在位置</button>
       <label>半徑（公尺）</label><input id="pRadius" type="number" value="${p.home_radius_m}">
     </div>
+    <div class="card"><h2>保養提醒</h2>
+      <p class="dim">設了之後，儀表卡會顯示「離下次保養還有幾 km」，到期前 500 km 也會用 Telegram 提醒一次。用的是車機的真實總里程（要裝「牆泥車況讀取」才有）。保養週期填 0＝關閉。</p>
+      <label>每幾 km 保養一次（例如 10000；0＝關閉）</label><input id="pSvcEvery" type="number" min="0" value="${p.service_every_km ?? 0}">
+      <label>上次保養時的總里程（km）</label><input id="pSvcBase" type="number" step="1" value="${p.service_base_km ?? ""}">
+    </div>
     <p><button onclick="savePrefs()">儲存</button> <span id="prefMsg"></span></p>
     <div class="card"><h2>iPhone 小工具</h2><p><a href="iphone.html">安裝說明＋一鍵複製程式</a></p></div>
     <div class="card"><h2>帳號</h2><button class="ghost" onclick="logout()">登出</button></div>
@@ -581,11 +682,15 @@ async function savePrefs() {
   prefs.tou_plan = $("pPlan").value; prefs.tou_enabled = prefs.tou_plan !== "none";
   prefs.weekend_offpeak = $("pWeekend").checked; prefs.home_peak_price = Number($("pPeak").value);
   prefs.offpeak_start = $("pOffStart").value.trim(); prefs.offpeak_end = $("pOffEnd").value.trim();
+  const svcEvery = Math.max(0, Math.round(Number($("pSvcEvery").value) || 0));
+  const svcBaseRaw = $("pSvcBase").value.trim();
+  prefs.service_every_km = svcEvery; prefs.service_base_km = svcBaseRaw === "" ? null : Number(svcBaseRaw);
   if (prefs.tou_plan === "custom" && (hm(prefs.offpeak_start) === null || hm(prefs.offpeak_end) === null)) { $("prefMsg").textContent = "離峰時間要寫成 22:30 這樣"; return; }
   const { error } = await sb.from("prefs").upsert({ home_price: prefs.home_price, public_price: prefs.public_price,
     home_lat: prefs.home_lat, home_lon: prefs.home_lon, home_radius_m: prefs.home_radius_m, charge_target: prefs.charge_target,
     tou_enabled: prefs.tou_enabled, tou_plan: prefs.tou_plan, offpeak_start: prefs.offpeak_start, offpeak_end: prefs.offpeak_end,
-    weekend_offpeak: prefs.weekend_offpeak, home_peak_price: prefs.home_peak_price }, { onConflict: "user_id" });
+    weekend_offpeak: prefs.weekend_offpeak, home_peak_price: prefs.home_peak_price,
+    service_every_km: prefs.service_every_km, service_base_km: prefs.service_base_km }, { onConflict: "user_id" });
   $("prefMsg").textContent = error ? "儲存失敗：" + error.message : "已儲存";
 }
 async function logout() { await sb.auth.signOut(); location.reload(); }
