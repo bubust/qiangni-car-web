@@ -309,8 +309,8 @@ function vehicleCard(st) {
       <div class="stat"><b>${fmt(v.odoKm)} km</b><span>總里程</span></div>
       <div class="stat"><b class="${v.lvRestVolt == null ? "" : v.lvRestVolt >= 12.4 ? "good" : v.lvRestVolt >= 12.2 ? "warn" : "bad"}">${fmt(v.lvRestVolt, 2)} V</b><span>小電瓶靜置電壓${v.lvRestVolt == null ? "（車機醒來時量）" : v.lvRestVolt >= 12.6 ? "・健康" : v.lvRestVolt >= 12.4 ? "・正常" : v.lvRestVolt >= 12.2 ? "・偏弱" : "・偏低，要檢查"}${v.lvRestAt ? "・" + dt(v.lvRestAt) : ""}</span></div>
       <div class="stat"><b>${fmt(v.lvVolt, 1)} V</b><span>12V 現在${v.lvVolt == null ? "" : v.lvVolt >= 13.2 ? "（大電池正在充它）" : "（沒在充）"}</span></div>
+      <div class="stat"><b>${v.chargeLimit != null ? v.chargeLimit + "%" : "--"}</b><span>充電上限</span></div>
       ${tyre("FL", "左前")}${tyre("FR", "右前")}${tyre("RL", "左後")}${tyre("RR", "右後")}
-      ${v.chargeLimit != null ? `<div class="stat"><b>${v.chargeLimit}%</b><span>充電上限</span></div>` : ""}
       ${v.chargeLeftMin != null && st.charging ? `<div class="stat"><b>${v.chargeLeftMin} 分</b><span>車子估計充滿</span></div>` : ""}
     </div></div>`;
 }
@@ -533,7 +533,12 @@ async function renderReports() {
         <div class="stat"><b>${withAa.length ? sec(withAa[Math.floor(withAa.length / 2)]) : "--"}</b><span>開著 Android Auto 時（一般）</span></div>
       </div><p class="dim">從打 R 到倒車畫面出來的時間，只計時、不碰倒車畫面。</p></div>`;
     })();
-    $(sec).innerHTML = block("這週", w) + block("這個月", m) + monthTable + careCard + avmCard + `
+    // parked 12 V top-ups (牆泥車況讀取 uploads a note "停車補電" each time the big battery charges the 12 V while off)
+    const topUp = await q("app_errors", (r) => r.eq("title", "停車補電").gte("at", Date.now() - 30 * 86400000).order("at", { ascending: false }).limit(20), "at,detail").catch(() => []);
+    const topUpCard = `<div class="card"><h2>停車時大電池幫小電瓶充電（近 30 天 ${topUp.length} 次）</h2>
+      ${topUp.length ? topUp.map((e) => `<div class="row"><span>${dt(e.at)}</span><b>${(e.detail || "").replace(/</g, "&lt;")}</b></div>`).join("")
+        : `<p class="dim">還沒有紀錄（要牆泥車況讀取 0.1.4 以上，熄火後車機醒著時才量得到）。</p>`}</div>`;
+    $(sec).innerHTML = block("這週", w) + block("這個月", m) + monthTable + careCard + avmCard + topUpCard + `
       <div class="card"><h2>其他</h2>
         <div class="row"><span>停車耗電（近 90 天平均）</span><b>${pdAvg === null ? "--" : fmt(pdAvg, 2) + " %/小時"}</b></div>
         <div class="row"><span>最近 30 趟平均評分</span><b>${scored.length ? Math.round(scored.reduce((a, b) => a + b, 0) / scored.length) : "--"}</b></div>
