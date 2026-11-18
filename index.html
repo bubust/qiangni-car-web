@@ -519,7 +519,21 @@ async function renderReports() {
       <div class="row"><span>充到 100% 的次數</span><b>${full}</b></div>
       <div class="row"><span>電量掉到 10% 以下</span><b class="${care(lowCount, 0, 3)}">${lowCount} 次</b></div>
       <p class="dim">一般建議：平常充到 80～90%，要遠行再充滿；充滿後不要放很久；少讓電量掉到 10% 以下；快充方便但不要天天用。顏色只是參考。</p></div>`;
-    $(sec).innerHTML = block("這週", w) + block("這個月", m) + monthTable + careCard + `
+    // reverse camera delay (牆泥 AA 助手 uploads each R as a note "倒車影像計時": ms=…, aa=1 when Android Auto was in front)
+    const avm = await q("app_errors", (r) => r.eq("title", "倒車影像計時").gte("at", Date.now() - 30 * 86400000).order("at"), "at,detail").catch(() => []);
+    const avmMs = avm.map((e) => ({ ms: +((e.detail || "").match(/ms=(\d+)/) || [])[1], aa: /aa=1/.test(e.detail || "") })).filter((x) => x.ms >= 0);
+    const avmCard = (() => {
+      if (!avmMs.length) return `<div class="card"><h2>倒車影像出現要多久</h2><p class="dim">還沒有紀錄（打 R 之後自動記，要牆泥 AA 助手 0.1.6 以上）。</p></div>`;
+      const s = avmMs.map((x) => x.ms).sort((a, b) => a - b), sec = (v) => (v / 1000).toFixed(1) + " 秒";
+      const withAa = avmMs.filter((x) => x.aa).map((x) => x.ms).sort((a, b) => a - b);
+      return `<div class="card"><h2>倒車影像出現要多久（近 30 天 ${s.length} 次）</h2><div class="grid">
+        <div class="stat"><b>${sec(s[Math.floor(s.length / 2)])}</b><span>一般</span></div>
+        <div class="stat"><b class="${s[s.length - 1] > 2000 ? "warn" : ""}">${sec(s[s.length - 1])}</b><span>最慢</span></div>
+        <div class="stat"><b>${s.filter((v) => v > 2000).length} 次</b><span>超過 2 秒</span></div>
+        <div class="stat"><b>${withAa.length ? sec(withAa[Math.floor(withAa.length / 2)]) : "--"}</b><span>開著 Android Auto 時（一般）</span></div>
+      </div><p class="dim">從打 R 到倒車畫面出來的時間，只計時、不碰倒車畫面。</p></div>`;
+    })();
+    $(sec).innerHTML = block("這週", w) + block("這個月", m) + monthTable + careCard + avmCard + `
       <div class="card"><h2>其他</h2>
         <div class="row"><span>停車耗電（近 90 天平均）</span><b>${pdAvg === null ? "--" : fmt(pdAvg, 2) + " %/小時"}</b></div>
         <div class="row"><span>最近 30 趟平均評分</span><b>${scored.length ? Math.round(scored.reduce((a, b) => a + b, 0) / scored.length) : "--"}</b></div>
