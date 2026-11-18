@@ -215,10 +215,15 @@ function fail(sec, e) { $(sec).innerHTML = `<div class="card"><h2>讀不到資�
 /** Trip numbers used everywhere. */
 function tripInfo(t) {
   const km = t.distance_m / 1000, net = t.kwh_used - t.kwh_regen;
-  const whkm = km >= 1 ? net * 1000 / km : null;
+  // this car sends 0 for the power value: no kWh at all → show the battery % used instead of "0 Wh/km"
+  const noPower = !(t.kwh_used > 0) && !(t.kwh_regen > 0);
+  const whkm = km >= 1 && !noPower ? net * 1000 / km : null;
   const regenPct = t.kwh_used > 0 ? t.kwh_regen / t.kwh_used * 100 : null;
+  const socUsed = t.soc_start != null && t.soc_end != null ? Math.max(0, t.soc_start - t.soc_end) : null;
+  const soc100 = socUsed !== null && km >= 3 ? socUsed / km * 100 : null;
   const avg = t.moving_s > 0 ? km / (t.moving_s / 3600) : null;
-  return { km, net, whkm, regenPct, avg, score: score(t, km, whkm, regenPct) };
+  const use = whkm !== null ? `${fmt(whkm)} Wh/km` : socUsed !== null ? `用電 ${fmt(socUsed, 1)}%${soc100 !== null ? `（每 100 km ${fmt(soc100)}%）` : ""}` : "用電 --";
+  return { km, net, whkm, regenPct, avg, socUsed, soc100, use, score: score(t, km, whkm, regenPct) };
 }
 /**
  * 駕駛評分 0–100: start at 100; hard accelerations / brakings per 10 km cost 8 each (max 40);
@@ -283,7 +288,7 @@ async function renderNow() {
     }
     if (last) {
       const i = tripInfo(last);
-      h += `<div class="card"><h2>上一趟</h2><div class="row"><span>${dt(last.start_at)}　${fmt(i.km, 1)} km</span><span>${fmt(i.whkm)} Wh/km</span></div></div>`;
+      h += `<div class="card"><h2>上一趟</h2><div class="row"><span>${dt(last.start_at)}　${fmt(i.km, 1)} km</span><span>${i.use}</span></div></div>`;
     }
     $(sec).innerHTML = h;
     if (st.lat) L.marker([st.lat, st.lon]).addTo(mapIn("nowMap", st.lat, st.lon, 16));
@@ -339,7 +344,7 @@ async function renderTrips() {
       const i = tripInfo(t);
       h += `<div class="item" onclick="tripDetail('${esc(t.device)}', ${t.car_id})">
         <div class="t">${dt(t.start_at)}${t.open ? ' <span class="pill">進行中</span>' : ""}　${fmt(i.km, 1)} km　${dur(t.end_at - t.start_at)}</div>
-        <div class="dim">${fmt(i.whkm)} Wh/km・回收 ${fmt(i.regenPct)}%・平均 ${fmt(i.avg)} km/h　${i.score === null ? "" : `評分 <b class="${scoreClass(i.score)}">${i.score}</b>`}</div></div>`;
+        <div class="dim">${i.use}${i.regenPct === null ? "" : `・回收 ${fmt(i.regenPct)}%`}・平均 ${fmt(i.avg)} km/h　${i.score === null ? "" : `評分 <b class="${scoreClass(i.score)}">${i.score}</b>`}</div></div>`;
     }
     $(sec).innerHTML = h + `</div><p class="dim">評分：急加速／急煞（每 10 km 一次扣 8 分）、電耗超過 180 Wh/km 扣分、回收多加分；2 km 以下不評分。</p>`;
   } catch (e) { fail(sec, e); }
@@ -356,9 +361,11 @@ async function tripDetail(device, id) {
       <div class="card"><h2>${dt(t.start_at)} → ${dt(t.end_at)}</h2>
         <div class="grid">
           <div class="stat"><b>${fmt(i.km, 1)} km</b><span>里程（車速推算）</span></div>
-          <div class="stat"><b>${fmt(i.whkm)}</b><span>Wh/km</span></div>
+          ${i.whkm !== null ? `<div class="stat"><b>${fmt(i.whkm)}</b><span>Wh/km</span></div>
           <div class="stat"><b>${fmt(t.kwh_used, 2)} kWh</b><span>用電</span></div>
-          <div class="stat"><b class="good">${fmt(t.kwh_regen, 2)} kWh</b><span>回收（${fmt(i.regenPct)}%）</span></div>
+          <div class="stat"><b class="good">${fmt(t.kwh_regen, 2)} kWh</b><span>回收（${fmt(i.regenPct)}%）</span></div>`
+          : `<div class="stat"><b>${fmt(i.soc100)}%</b><span>每 100 km 用電</span></div>
+          <div class="stat"><b>--</b><span>回收（車子沒給功率）</span></div>`}
           <div class="stat"><b>${fmt(i.avg)} / ${fmt(t.max_kmh)}</b><span>平均／最高 km/h</span></div>
           <div class="stat"><b>${fmt(t.soc_start)}→${fmt(t.soc_end)}%</b><span>電量</span></div>
           <div class="stat"><b>${t.hard_accel || 0} / ${t.hard_brake || 0}</b><span>急加速／急煞</span></div>
