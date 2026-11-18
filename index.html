@@ -277,6 +277,7 @@ async function renderNow() {
         <div class="stat"><b>${fmt(st.outside_c)}°C</b><span>車外溫度</span></div>
         <div class="stat"><b>${st.car_time ? dt(st.car_time) : "--"}</b><span>車上最後回報</span></div>
       </div></div>`;
+    h += vehicleCard(st);
     if (st.charging) h += await chargingCard(st);
     if (st.lat) h += `<div class="card"><h2>車在這裡</h2><div id="nowMap" class="map"></div>
       <p><a href="https://maps.google.com/?q=${st.lat},${st.lon}">用 Google 地圖開</a>　<a href="https://maps.apple.com/?q=${st.lat},${st.lon}">用 Apple 地圖開</a></p></div>`;
@@ -293,6 +294,24 @@ async function renderNow() {
     $(sec).innerHTML = h;
     if (st.lat) L.marker([st.lat, st.lon]).addTo(mapIn("nowMap", st.lat, st.lon, 16));
   } catch (e) { fail(sec, e); }
+}
+
+/** 車況 from 牆泥車況讀取 (bridge): odometer, tyres, 12 V, doors/windows, warning lamps. */
+function vehicleCard(st) {
+  const v = st.vehicle;
+  if (!v) return `<div class="card"><h2>車況</h2><p class="dim">還沒有車況資料（總里程、胎壓、12V、車門）。要在車上裝「牆泥車況讀取」，打開後按「允許 USB 偵錯」，車子有網路後才會出現。</p></div>`;
+  const tyre = (n, label) => v[`tire${n}Psi`] == null ? `<div class="stat"><b>--</b><span>${label}</span></div>`
+    : `<div class="stat"><b class="${v[`tire${n}Warn`] ? "bad" : ""}">${fmt(v[`tire${n}Psi`], 1)}</b><span>${label} psi${v[`tire${n}C`] != null ? `・${v[`tire${n}C`]}°C` : ""}</span></div>`;
+  const warn = [v.doorOpen && "車門沒關", v.windowOpen && "車窗沒關", v.tireWarn && "胎壓警示", v.warnLamp && "故障燈亮", v.hvbHot && "電池過熱"].filter(Boolean);
+  return `<div class="card"><h2>車況</h2>
+    ${warn.length ? `<p class="bad"><b>⚠ ${warn.join("、")}</b></p>` : `<p class="good">車門、車窗都關好，沒有警示燈</p>`}
+    <div class="grid">
+      <div class="stat"><b>${fmt(v.odoKm)} km</b><span>總里程</span></div>
+      <div class="stat"><b>${fmt(v.lvVolt, 1)} V</b><span>12V 電瓶（車子發動時）</span></div>
+      ${tyre("FL", "左前")}${tyre("FR", "右前")}${tyre("RL", "左後")}${tyre("RR", "右後")}
+      ${v.chargeLimit != null ? `<div class="stat"><b>${v.chargeLimit}%</b><span>充電上限</span></div>` : ""}
+      ${v.chargeLeftMin != null && st.charging ? `<div class="stat"><b>${v.chargeLeftMin} 分</b><span>車子估計充滿</span></div>` : ""}
+    </div></div>`;
 }
 
 /**
