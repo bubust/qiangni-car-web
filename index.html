@@ -68,6 +68,14 @@
   .pvdist { font-size:3.4cqw; } .pvins { font-size:1.5cqw; } .pvleft { font-size:1.6cqw; color:#c8ced4; font-weight:700; }
   .pvbar { height:0.6cqw; background:#ffffff22; border-radius:1cqw; } .pvbar i { display:block; width:34%; height:100%; background:#4aa8ff; border-radius:1cqw; }
   .pvtab { width:auto; padding:6px 14px; }
+  main.wide { max-width: 1400px; }
+  .clgrid { display:grid; grid-template-columns: minmax(0,1fr); gap:0 16px; }
+  .clpal { position:sticky; top:0; z-index:5; }
+  @media (min-width: 760px) {
+    .clgrid { grid-template-columns: minmax(0,1.4fr) minmax(0,1fr); align-items:start; }
+    .clpv { position:sticky; top:0; }
+    .clpal { position:static; }
+  }
   .clbox { display:flex; flex-wrap:wrap; gap:8px; min-height:44px; padding:6px; border:1px dashed var(--line); border-radius:10px; }
   .clchip { display:inline-flex; align-items:center; gap:6px; padding:8px 12px; border-radius:99px; background:var(--bg); border:1px solid var(--line); font-size:15px; touch-action:none; user-select:none; }
   #clPalette .clx { display:none; }
@@ -169,6 +177,7 @@ function openTab(t) {
   document.querySelectorAll(".tab").forEach((s) => s.classList.toggle("hidden", s.id !== "tab-" + t));
   charts.forEach((c) => c.destroy()); charts = [];
   maps.forEach((m) => m.remove()); maps = [];
+  if (t !== "cluster") document.querySelector("main").classList.remove("wide");
   ({ now: renderNow, trips: renderTrips, charges: renderCharges, reports: renderReports, key: renderKey, cluster: renderCluster, settings: renderSettings })[t]();
 }
 
@@ -759,24 +768,27 @@ function clPreview(layout, mode) {
 }
 
 function renderCluster() {
+  document.querySelector("main").classList.add("wide");
   const L = JSON.parse(JSON.stringify(prefs.cluster_layout || CL_DEFAULT));
   for (const k of ["right", "left", "top"]) L[k] = Object.assign({ drive: [], park: [] }, L[k] || {});
   L.on = Object.assign({ left: true, top: true }, L.on || {});
   const chip = (id) => `<span class="clchip" data-id="${id}">${CL_NAME[id] || id}<b class="clx" aria-label="移除">✕</b></span>`;
-  $("tab-cluster").innerHTML = `
+  $("tab-cluster").innerHTML = `<div class="clgrid"><div class="clpv">
+    <div class="card"><h2>模擬圖</h2>
+      <div class="row" style="gap:8px;justify-content:flex-start"><button id="pvDrive" class="pvtab">開車時</button><button id="pvPark" class="pvtab secondary">停車</button></div>
+      <div id="clPreview" style="margin-top:8px"></div><p class="dim" style="font-size:13px">數字是範例。導航中右卡整張是導航；有測速、超速時三張一起閃紅；上方細條遇到服務區、快充、警示會自動換掉。</p></div>
+    </div><div class="clctl">
     <div class="card"><h2>儀表卡排版</h2>
       <p class="dim">把下面的項目<b>拖</b>到想放的卡片，卡片裡也可以拖來排順序；按 ✕ 拿掉。存檔後約 2 分鐘車上會自動套用（車子要開著、有網路）。空的那張會用預設內容。</p>
       <label class="row"><span>左卡（車況）</span><input type="checkbox" id="clLeft" ${L.on.left ? "checked" : ""} style="width:auto"></label>
       <label class="row"><span>上方細條（車速上面）</span><input type="checkbox" id="clTop" ${L.on.top ? "checked" : ""} style="width:auto"></label>
     </div>
-    <div class="card"><h2>模擬圖</h2>
-      <div class="row" style="gap:8px;justify-content:flex-start"><button id="pvDrive" class="pvtab">開車時</button><button id="pvPark" class="pvtab secondary">停車</button></div>
-      <div id="clPreview" style="margin-top:8px"></div><p class="dim" style="font-size:13px">數字是範例。導航中右卡整張是導航；有測速、超速時三張一起閃紅；上方細條遇到服務區、快充、警示會自動換掉。</p></div>
-    <div class="card" style="position:sticky;top:0;z-index:5"><h2>可以放的項目</h2><div id="clPalette" class="clbox">${CL_ITEMS.map(([id]) => chip(id)).join("")}</div></div>
+    <div class="card clpal"><h2>可以放的項目</h2><div id="clPalette" class="clbox">${CL_ITEMS.map(([id]) => chip(id)).join("")}</div></div>
     ${CL_LISTS.map(([c, m, t, max]) => `<div class="card"><h2 style="font-size:16px">${t}</h2>
       <div class="clbox cllist" data-card="${c}" data-mode="${m}" data-max="${max}">${L[c][m].map(chip).join("")}</div></div>`).join("")}
     <div class="card"><button id="clSave">存檔，傳到車上</button> <button id="clReset" class="secondary">全部恢復預設</button>
-      <p id="clMsg" class="dim"></p></div>`;
+      <p id="clMsg" class="dim"></p></div>
+    </div></div>`;
   let pvMode = "drive";
   const redraw = () => {
     $("clPreview").innerHTML = clPreview(collect(), pvMode);
