@@ -14,6 +14,7 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
 <style>
   :root { --bg:#f4f5f7; --card:#fff; --text:#16181d; --dim:#6b7280; --line:#e5e7eb; --accent:#2563eb; --good:#16a34a; --warn:#d97706; --bad:#dc2626; }
   @media (prefers-color-scheme: dark) { :root { --bg:#0f1115; --card:#1a1d23; --text:#e8eaed; --dim:#9aa3ad; --line:#2a2f37; --accent:#60a5fa; --good:#4ade80; --warn:#fbbf24; --bad:#f87171; } }
@@ -45,6 +46,10 @@
   nav button { flex:1; background:none; color:var(--dim); border-radius:0; padding:12px 0; font-weight:500; }
   nav button.on { color:var(--accent); font-weight:700; }
   .hidden { display:none !important; }
+  .clbox { display:flex; flex-wrap:wrap; gap:8px; min-height:44px; padding:6px; border:1px dashed var(--line); border-radius:10px; }
+  .clchip { display:inline-flex; align-items:center; gap:6px; padding:8px 12px; border-radius:99px; background:var(--bg); border:1px solid var(--line); font-size:15px; touch-action:none; user-select:none; }
+  #clPalette .clx { display:none; }
+  .clx { font-weight:400; color:var(--dim); cursor:pointer; padding:0 2px; }
   .pill { display:inline-block; padding:2px 8px; border-radius:99px; font-size:13px; background:var(--bg); border:1px solid var(--line); }
   canvas { max-width:100%; }
   details summary { cursor:pointer; color:var(--dim); font-size:14px; }
@@ -80,6 +85,7 @@
 <section id="tab-charges" class="tab hidden"></section>
 <section id="tab-reports" class="tab hidden"></section>
 <section id="tab-key" class="tab hidden"></section>
+<section id="tab-cluster" class="tab hidden"></section>
 <section id="tab-settings" class="tab hidden"></section>
 </main>
 
@@ -89,6 +95,7 @@
   <button data-tab="charges">充電</button>
   <button data-tab="reports">報表</button>
   <button data-tab="key">鑰匙</button>
+  <button data-tab="cluster">儀表</button>
   <button data-tab="settings">設定</button>
 </nav>
 
@@ -140,7 +147,7 @@ function openTab(t) {
   document.querySelectorAll(".tab").forEach((s) => s.classList.toggle("hidden", s.id !== "tab-" + t));
   charts.forEach((c) => c.destroy()); charts = [];
   maps.forEach((m) => m.remove()); maps = [];
-  ({ now: renderNow, trips: renderTrips, charges: renderCharges, reports: renderReports, key: renderKey, settings: renderSettings })[t]();
+  ({ now: renderNow, trips: renderTrips, charges: renderCharges, reports: renderReports, key: renderKey, cluster: renderCluster, settings: renderSettings })[t]();
 }
 
 // ------------------------------------------------------------ data helpers
@@ -670,6 +677,70 @@ async function runKey(want) {
     setTimeout(() => { if (!done && !cmdSent) sendCmd(); }, 1200);
     setTimeout(() => finish(false, "盒子 15 秒內沒回報（不在附近、沒電，或被車機佔住連線）"), 15000);
   } catch (err) { finish(false, (err && err.message) ? err.message : "連不上"); }
+}
+
+// ------------------------------------------------------------ 儀表卡排版（拖拉）
+// Everything a cluster card line can show (same ids as cluster/Cards.kt ITEMS). d = offered while driving, p = parked.
+const CL_ITEMS = [
+  ["battery", "電量 %", 1, 1], ["est", "續航估", 1, 1], ["range", "原廠續航", 1, 1], ["kwh", "剩餘電量 kWh", 1, 1],
+  ["power", "即時功率 kW", 1, 0], ["regen", "本趟回收 kWh", 1, 0], ["tripUse", "本趟耗電 %/百km", 1, 0],
+  ["recentUse", "最近 10 km 耗電", 1, 1], ["tripKm", "本趟里程", 1, 0], ["tripTime", "本趟時間", 1, 0],
+  ["sinceCharge", "充電後里程", 1, 1], ["odo", "總里程", 1, 1], ["outside", "車外溫度", 1, 1], ["weather", "天氣", 0, 1],
+  ["parkDrop", "停車掉電", 0, 1], ["launch", "0–100 成績", 0, 1], ["tire", "胎壓", 1, 1], ["lv12", "12V 電瓶", 0, 1],
+  ["signLimit", "速限", 1, 0], ["aqi", "空氣品質", 1, 1], ["smooth", "平穩度", 1, 0], ["homeSoc", "到家剩電", 1, 1],
+  ["service", "保養還有幾 km", 1, 1], ["cruise", "巡航速度・跟車", 1, 0], ["accel", "油門 %", 1, 0], ["speed", "車速", 1, 0],
+  ["arrive", "到達剩電 %", 1, 0], ["nextCam", "下一個測速", 1, 0], ["cms", "國道情報板", 1, 0], ["today", "今天累計", 1, 1],
+  ["avgSpeed", "本趟平均車速", 1, 0], ["chargeLeft", "充飽還要多久", 0, 1], ["month", "本月充電・花費", 0, 1],
+  ["tireTemp", "四輪胎溫", 1, 1], ["lvRest", "小電瓶靜置電壓", 0, 1], ["clock", "時鐘", 1, 1], ["date", "日期", 1, 1],
+];
+const CL_NAME = Object.fromEntries(CL_ITEMS.map(([id, n]) => [id, n]));
+const CL_LISTS = [
+  ["right", "drive", "右卡・開車時（沒導航時顯示；導航中整張是導航）", 5], ["right", "park", "右卡・停車（出發簡報）", 5],
+  ["left", "drive", "左卡・開車時", 5], ["left", "park", "左卡・停車", 5],
+  ["top", "drive", "上方細條・開車時（最多 2 項；有服務區、快充、警示時會自動換掉）", 2], ["top", "park", "上方細條・停車", 2],
+];
+const CL_DEFAULT = { right: { drive: [], park: [] }, left: { drive: ["range", "est", "power", "regen", "tripKm"], park: ["range", "est", "sinceCharge", "odo", "weather"] },
+  top: { drive: ["est", "power"], park: ["weather", "sinceCharge"] }, on: { left: true, top: true } };
+
+function renderCluster() {
+  const L = JSON.parse(JSON.stringify(prefs.cluster_layout || CL_DEFAULT));
+  for (const k of ["right", "left", "top"]) L[k] = Object.assign({ drive: [], park: [] }, L[k] || {});
+  L.on = Object.assign({ left: true, top: true }, L.on || {});
+  const chip = (id) => `<span class="clchip" data-id="${id}">${CL_NAME[id] || id}<b class="clx" aria-label="移除">✕</b></span>`;
+  $("tab-cluster").innerHTML = `
+    <div class="card"><h2>儀表卡排版</h2>
+      <p class="dim">把下面的項目<b>拖</b>到想放的卡片，卡片裡也可以拖來排順序；按 ✕ 拿掉。存檔後約 2 分鐘車上會自動套用（車子要開著、有網路）。空的那張會用預設內容。</p>
+      <label class="row"><span>左卡（車況）</span><input type="checkbox" id="clLeft" ${L.on.left ? "checked" : ""} style="width:auto"></label>
+      <label class="row"><span>上方細條（車速上面）</span><input type="checkbox" id="clTop" ${L.on.top ? "checked" : ""} style="width:auto"></label>
+    </div>
+    <div class="card" style="position:sticky;top:0;z-index:5"><h2>可以放的項目</h2><div id="clPalette" class="clbox">${CL_ITEMS.map(([id]) => chip(id)).join("")}</div></div>
+    ${CL_LISTS.map(([c, m, t, max]) => `<div class="card"><h2 style="font-size:16px">${t}</h2>
+      <div class="clbox cllist" data-card="${c}" data-mode="${m}" data-max="${max}">${L[c][m].map(chip).join("")}</div></div>`).join("")}
+    <div class="card"><button id="clSave">存檔，傳到車上</button> <button id="clReset" class="secondary">全部恢復預設</button>
+      <p id="clMsg" class="dim"></p></div>`;
+  new Sortable($("clPalette"), { group: { name: "cl", pull: "clone", put: false }, sort: false, animation: 120 });
+  document.querySelectorAll(".cllist").forEach((el) => new Sortable(el, {
+    group: { name: "cl", pull: true, put: (to) => to.el.children.length < +to.el.dataset.max }, animation: 120,
+    onAdd: (e) => { // no duplicate in one list
+      const ids = [...el.children].map((c) => c.dataset.id);
+      if (ids.filter((x) => x === e.item.dataset.id).length > 1) e.item.remove();
+    },
+  }));
+  $("tab-cluster").addEventListener("click", (e) => { if (e.target.classList.contains("clx") && e.target.closest(".cllist")) e.target.parentElement.remove(); });
+  const collect = () => {
+    const out = { right: {}, left: {}, top: {}, on: { left: $("clLeft").checked, top: $("clTop").checked } };
+    document.querySelectorAll(".cllist").forEach((el) => { out[el.dataset.card][el.dataset.mode] = [...el.children].map((c) => c.dataset.id); });
+    return out;
+  };
+  const save = async (layout) => {
+    $("clMsg").textContent = "存檔中…";
+    const { error } = await sb.from("prefs").upsert({ cluster_layout: layout }, { onConflict: "user_id" });
+    if (error) { $("clMsg").textContent = "存檔失敗：" + error.message; return; }
+    prefs.cluster_layout = layout;
+    $("clMsg").textContent = "已存檔 ✓ 車上約 2 分鐘內會套用";
+  };
+  $("clSave").onclick = () => save(collect());
+  $("clReset").onclick = async () => { await save(CL_DEFAULT); renderCluster(); };
 }
 
 function renderSettings() {
