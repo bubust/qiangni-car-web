@@ -347,8 +347,8 @@ function vehicleCard(st) {
     ${warn.length ? `<p class="bad"><b>⚠ ${warn.join("、")}</b></p>` : `<p class="good">車門、車窗都關好，沒有警示燈</p>`}
     <div class="grid">
       <div class="stat"><b>${fmt(v.odoKm)} km</b><span>總里程</span></div>
-      <div class="stat"><b class="${v.lvRestVolt == null ? "" : v.lvRestVolt >= 12.4 ? "good" : v.lvRestVolt >= 12.2 ? "warn" : "bad"}">${fmt(v.lvRestVolt, 2)} V</b><span>小電瓶靜置電壓${v.lvRestVolt == null ? "（車機醒來時量）" : v.lvRestVolt >= 12.6 ? "・健康" : v.lvRestVolt >= 12.4 ? "・正常" : v.lvRestVolt >= 12.2 ? "・偏弱" : "・偏低，要檢查"}${v.lvRestAt ? "・" + dt(v.lvRestAt) : ""}</span></div>
-      <div class="stat"><b>${fmt(v.lvVolt, 1)} V</b><span>12V 現在${v.lvVolt == null ? "" : v.lvVolt >= 13.2 ? "（大電池正在充它）" : "（沒在充）"}</span></div>
+      ${v.lvRestVolt == null ? "" : `<div class="stat"><b class="${v.lvRestVolt == null ? "" : v.lvRestVolt >= 12.4 ? "good" : v.lvRestVolt >= 12.2 ? "warn" : "bad"}">${fmt(v.lvRestVolt, 2)} V</b><span>小電瓶靜置電壓${v.lvRestVolt == null ? "（車機醒來時量）" : v.lvRestVolt >= 12.6 ? "・健康" : v.lvRestVolt >= 12.4 ? "・正常" : v.lvRestVolt >= 12.2 ? "・偏弱" : "・偏低，要檢查"}${v.lvRestAt ? "・" + dt(v.lvRestAt) : ""}</span></div>`}
+      <div class="stat"><b>${fmt(v.lvVolt, 1)} V</b><span>12V 現在${v.lvVolt == null ? "" : v.lvVolt >= 13.2 ? "（大電池正在充它，車機醒著時一直會充）" : "（沒在充）"}</span></div>
       <div class="stat"><b>${v.chargeLimit != null ? v.chargeLimit + "%" : "--"}</b><span>充電上限</span></div>
       ${tyre("FL", "左前")}${tyre("FR", "右前")}${tyre("RL", "左後")}${tyre("RR", "右後")}
       ${v.chargeLeftMin != null && st.charging ? `<div class="stat"><b>${v.chargeLeftMin} 分</b><span>車子估計充滿</span></div>` : ""}
