@@ -586,6 +586,7 @@ async function renderReports() {
       <div class="card"><h2>電耗和車外溫度</h2><canvas id="cTemp" height="220"></canvas></div>
       <div class="card"><h2>電耗和平均車速</h2><canvas id="cSpeed" height="220"></canvas></div>
       <div class="card"><h2>電池健康（推算可用容量）</h2>${caps.length ? `<canvas id="cCap" height="200"></canvas>` : `<p class="dim">要有一次充電超過 20% 才算得出來。</p>`}</div>
+      <div class="card"><h2>🎉 年度行車回顧</h2><p class="dim">今年開了多遠、最常去哪、最省電的一趟、比開油車省多少。</p><button onclick="yearReview()">看今年的回顧</button><div id="yearBox"></div></div>
       <div class="card"><h2>終生行車地圖</h2><p class="dim">把一年內所有 GPS 點畫出來，資料多時要等一下。</p><button onclick="lifetimeMap()">畫出來</button><div id="lifeMap" class="map hidden"></div></div>`;
 
     const pts = trips.map((t) => ({ t, i: tripInfo(t) })).filter((x) => x.i.whkm !== null && x.i.km >= 2);
@@ -598,6 +599,63 @@ async function renderReports() {
       data: { labels: caps.map((c) => dt(c.x)), datasets: [{ label: "kWh", data: caps.map((c) => c.y), borderColor: "#16a34a", tension: .3 }] },
       options: { plugins: { legend: { display: false } } } });
   } catch (e) { fail(sec, e); }
+}
+
+/**
+ * 年度回顧 (owner 2026-11-25): this calendar year's trips, charges and GPS. Gas comparison uses a typical
+ * petrol car (12 km/L, 95 at 30 元/L) and CO2 2.3 kg/L petrol vs 0.494 kg/kWh Taiwan grid (energy-board factor);
+ * all rough, said on the page.
+ */
+async function yearReview() {
+  const box = $("yearBox");
+  box.innerHTML = `<p class="dim">整理中…</p>`;
+  try {
+    const y = new Date().getFullYear(), from = new Date(y, 0, 1).getTime();
+    const trips = await all("trips", (r) => r.eq("open", false).gte("start_at", from).order("start_at"));
+    if (!trips.length) { box.innerHTML = `<p class="dim">今年還沒有旅程紀錄。</p>`; return; }
+    const charges = await all("charges", (r) => r.eq("open", false).gte("start_at", from).order("start_at"));
+    const places = await chargePlaces(charges);
+    const km = trips.reduce((a, t) => a + t.distance_m / 1000, 0);
+    const hours = trips.reduce((a, t) => a + t.moving_s / 3600, 0);
+    const kwh = charges.reduce((a, c) => a + c.kwh_in, 0);
+    const cost = charges.reduce((a, c) => a + c.kwh_in * (places.get(`${c.device}/${c.car_id}`)?.price ?? prefs.public_price), 0);
+    const gasL = km / 12, gasCost = gasL * 30;
+    const co2 = gasL * 2.3 - kwh * 0.494;
+    const longest = trips.reduce((a, t) => (t.distance_m > a.distance_m ? t : a));
+    // most efficient: battery % per 100 km on trips of 10 km or more (works without power data)
+    const eff = trips.filter((t) => t.distance_m >= 10000 && t.soc_start !== null && t.soc_end !== null && t.soc_start > t.soc_end)
+      .map((t) => ({ t, r: (t.soc_start - t.soc_end) / (t.distance_m / 1000) * 100 })).sort((a, b) => a.r - b.r);
+    // months
+    const months = Array.from({ length: 12 }, () => 0);
+    for (const t of trips) months[new Date(t.start_at).getMonth()] += t.distance_m / 1000;
+    const maxM = Math.max(...months, 1);
+    // where the car stops most: the last GPS point of each trip, rounded to ~100 m
+    const pts = await all("points", (r) => r.gte("t", from).order("t"), "lat,lon,trip_id,device,t", 100000);
+    const lastOf = new Map();
+    for (const p of pts) lastOf.set(p.device + "/" + p.trip_id, p);
+    const spots = new Map();
+    for (const p of lastOf.values()) {
+      const k = `${p.lat.toFixed(3)},${p.lon.toFixed(3)}`;
+      spots.set(k, (spots.get(k) ?? 0) + 1);
+    }
+    const top = [...spots.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
+    const home = prefs.home_lat !== null ? (k) => { const [a, b] = k.split(",").map(Number); return metres(a, b, prefs.home_lat, prefs.home_lon) < 300; } : () => false;
+    box.innerHTML = `
+      <div class="grid" style="margin-top:10px">
+        <div class="stat"><b>${fmt(km)} km</b><span>${trips.length} 趟、開了 ${fmt(hours)} 小時</span></div>
+        <div class="stat"><b>${fmt(kwh)} 度</b><span>${charges.length} 次充電、約 ${fmt(cost)} 元</span></div>
+        <div class="stat"><b class="good">${fmt(gasCost - cost)} 元</b><span>比開油車省（油車約 ${fmt(gasCost)} 元）</span></div>
+        <div class="stat"><b class="good">${fmt(co2)} kg</b><span>少排的二氧化碳</span></div>
+      </div>
+      <div class="row"><span>最長的一趟</span><b>${dt(longest.start_at)}　${fmt(longest.distance_m / 1000, 1)} km</b></div>
+      ${eff.length ? `<div class="row"><span>最省電的一趟</span><b>${dt(eff[0].t.start_at)}　每百公里 ${fmt(eff[0].r, 1)}%</b></div>` : ""}
+      <h3 style="margin:12px 0 4px;font-size:15px">每個月開了多遠</h3>
+      <div style="display:flex;gap:4px;align-items:flex-end;height:90px">${months.map((v, i) =>
+        `<div style="flex:1;text-align:center;font-size:11px" class="dim"><div style="height:${Math.round(v / maxM * 70)}px;background:var(--accent);border-radius:3px 3px 0 0"></div>${i + 1}</div>`).join("")}</div>
+      <h3 style="margin:12px 0 4px;font-size:15px">最常停的地方</h3>
+      ${top.length ? top.map(([k, n], i) => `<div class="row"><span>${i + 1}. ${home(k) ? "🏠 家" : `<a href="https://maps.google.com/?q=${k}">${k}</a>`}</span><b>${n} 次</b></div>`).join("") : `<p class="dim">沒有 GPS 紀錄。</p>`}
+      <p class="dim">油車用每公升 12 km、95 無鉛 30 元估；電的碳排用台灣電力排碳係數 0.494 kg/度。都是粗估。</p>`;
+  } catch (e) { box.innerHTML = `<p class="bad">${esc(e.message)}</p>`; }
 }
 
 async function lifetimeMap() {
